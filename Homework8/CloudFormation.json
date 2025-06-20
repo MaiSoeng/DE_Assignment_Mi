@@ -1,0 +1,152 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "S3 Bucket Assignment8",
+  "Parameters":{
+    "DBName":{
+      "Type": "String",
+      "Default":"assignment8rdsmi",
+      "Description": "The database name"
+    },
+    "DBUsername":{
+      "NoEcho": "True",
+      "Description": "The username for my database",
+      "Type": "String",
+      "Default": "usermi",
+      "MinLength": "1",
+      "MaxLength": "16",
+      "AllowedPattern": "[a-zA-Z][a-zA-Z0-9]*"
+    },
+    "DBPassword":{
+      "NoEcho": "True",
+      "Description": "The password for the database",
+      "Type": "String",
+      "Default": "mi123456",
+      "MinLength": "8",
+      "MaxLength": "41",
+      "AllowedPattern": "[a-zA-Z0-9]*"
+    }
+  },
+  "Resources": {
+    "MyS3Bucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": "assignment8-s3-mi"
+      }
+    },
+    "InstanceSecurityGroup":{
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties":{
+        "GroupDescription": "Enable SSH Access",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 22,
+            "ToPort": 22,
+            "CidrIp": "0.0.0.0/0"
+          }
+        ]
+      }
+    },
+    "MyRDSSecurityGroup":{
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties":{
+        "GroupDescription": "Enable MySQL connection with EC2",
+        "VPCId": "vpc-09155e992773617fb",
+        "SecurityGroupIngress":[
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 3306,
+            "ToPort": 3306,
+            "CidrIp": "0.0.0.0/0"
+          }
+        ]
+      }
+    },
+    "MyEC2Instance": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": "ami-0f3f13f145e66a0a3",
+        "InstanceType": "t3.micro",
+        "KeyName": "mi-assignment8",
+        "SecurityGroupIds":[
+          {
+            "Ref": "InstanceSecurityGroup"
+          }
+        ],
+        "Tags": [
+          {
+          "Key": "Name",
+          "Value": "assignment8-ec2-mi"
+          }
+        ]
+      }
+    },
+    "MyRDS":{
+      "Type": "AWS::RDS::DBInstance",
+      "Properties":{
+        "AllocatedStorage": 20,
+        "DBInstanceClass": "db.t3.micro",
+        "DBInstanceIdentifier": {
+        "Ref": "DBName"
+      },
+        "DBName":{
+          "Ref": "DBName"
+        },
+        "Engine": "MySQL",
+        "EngineVersion": "8.0.33",
+        "MasterUsername":{
+          "Ref": "DBUsername"
+        },
+        "MasterUserPassword":{
+          "Ref": "DBPassword"
+        },
+        "VPCSecurityGroups":[
+          {
+            "Ref": "MyRDSSecurityGroup"
+          }
+        ],
+        "PubliclyAccessible": true
+      }
+    },
+    "ElasticIP":{
+      "Type": "AWS::EC2::EIP"
+    },
+    "EIPAssociation":{
+      "Type": "AWS::EC2::EIPAssociation",
+      "Properties":{
+        "InstanceId": {
+          "Ref": "MyEC2Instance"
+        },
+        "EIP":{
+          "Ref": "ElasticIP"
+        }
+      }
+    } 
+  },
+  "Outputs": {
+    "S3BucketName": {
+      "Description": "Name of the created S3 bucket",
+      "Value": {
+        "Ref": "MyS3Bucket"
+      }
+    },
+    "EC2InstanceId":{
+      "Description": "EC2 Instance Id",
+      "Value":{
+        "Ref": "MyEC2Instance"
+      }
+    },
+    "EC2PublicIP":{
+      "Description": "EC2 Public IP",
+      "Value":{
+        "Ref": "ElasticIP"
+      }
+    },
+    "RDSEndpoint":{
+      "Description": "Output the endpoint URL of RDS",
+      "Value":{
+        "Fn::GetAtt": ["MyRDS", "Endpoint.Address"]
+      }
+    }
+  }
+}
