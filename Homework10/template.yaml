@@ -1,0 +1,170 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy Lambda function, CloudWatch Dashboard, and Alarm
+
+Parameters:
+  LambdaFunctionName:
+    Type: String
+    Default: mi-lambda-function
+
+  DashboardName:
+    Type: String
+    Default: LambdaDashboard
+
+Resources:
+
+  LogRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LogRolePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:Create*'
+                  - 'logs:PutLogEvents'
+                Resource: "*"
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LambdaFunctionName 
+      Handler: index.lambda_handler
+      Role: !GetAtt LogRole.Arn
+      Runtime: python3.9
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          
+          def lambda_handler(event, context):
+              # get the parameters from the event object to calculate the sum of two numbers
+              a = event['a']
+              b = event['b']
+          
+              result = calculate_sum(a, b)
+              print(f'The sum result is {result}')
+          
+              logger.info(f"CloudWatch logs group: {context.log_group_name}")
+          
+              # return the sum as a json string
+              data = {"sum": result}
+              return json.dumps(data)
+          
+          def calculate_sum(a, b):
+              return a + b
+
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${LambdaFunctionName}
+
+  LambdaDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Ref DashboardName
+      DashboardBody: !Sub |
+          {
+            "widgets": [
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 0,
+                "width": 8,
+                "height": 6,
+                "properties": {
+                  "metrics": [
+                    [ "AWS/Lambda", "Duration", "FunctionName", "${LambdaFunctionName}" ]
+                  ],
+                  "view": "timeSeries",
+                  "stat": "Average",
+                  "region": "${AWS::Region}",
+                  "title": "Duration"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 8,
+                "y": 0,
+                "width": 8,
+                "height": 6,
+                "properties": {
+                  "metrics": [
+                    [ "AWS/Lambda", "Invocations", "FunctionName", "${LambdaFunctionName}" ]
+                  ],
+                  "view": "timeSeries",
+                  "stat": "Sum",
+                  "region": "${AWS::Region}",
+                  "title": "Invocations"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 16,
+                "y": 0,
+                "width": 8,
+                "height": 6,
+                "properties": {
+                  "metrics": [
+                    [ "AWS/Lambda", "Errors", "FunctionName", "${LambdaFunctionName}" ]
+                  ],
+                  "view": "timeSeries",
+                  "stat": "Sum",
+                  "region": "${AWS::Region}",
+                  "title": "Errors"
+                }
+              }
+            ]
+          }
+
+  LambdaErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Error rate alarm
+      AlarmName: !Sub "${LambdaFunctionName}-ErrorRate"
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      Threshold: 1
+      Metrics:
+        - Id: errors
+          Label: Errors
+          MetricStat:
+            Metric:
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref LambdaFunctionName
+              Namespace: AWS/Lambda
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: invocations
+          Label: Invocations
+          MetricStat:
+            Metric:
+              MetricName: Invocations
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref LambdaFunctionName
+              Namespace: AWS/Lambda
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: errorRate
+          Expression: "errors / invocations * 100"
+          Label: "Error Rate %"
+          ReturnData: true
+      TreatMissingData: notBreaching
