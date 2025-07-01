@@ -1,0 +1,7 @@
+{
+  "action": "insert",
+  "payload": {
+    "name": "Michael",
+    "age": 24
+  }
+}

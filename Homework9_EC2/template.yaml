@@ -1,0 +1,21 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Resources:
+  LambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      CodeUri: src/
+      Timeout: 20
+      Policies:
+       - Statement:
+          - Effect: Allow
+            Action: 
+              - ec2:StartInstances
+              - ec2:StopInstances
+            Resource: "*"
+
+
+

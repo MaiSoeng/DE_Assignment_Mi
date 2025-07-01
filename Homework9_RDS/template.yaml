@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SAM Template to create Lambda function and RDS
+
+Globals:
+  Function:
+    Timeout: 20
+    Runtime: python3.9
+
+Parameters:
+  DBName:
+    Type: String
+    Default: assignment9rdsmi
+    Description: The database name
+  DBUsername:
+    NoEcho: true
+    Type: String
+    Default: usermi
+    Description: The username for my database
+  DBPassword:
+    NoEcho: true
+    Type: String
+    Default: mi123456
+    Description: The password of the database
+
+Resources:
+
+  MyLambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Lambda outbound group
+      VpcId: vpc-09155e992773617fb
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+
+  MyRDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow Lambda to access RDS MySQL
+      VpcId: vpc-09155e992773617fb
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref MyLambdaSecurityGroup
+
+  MyRDS:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: "20"
+      DBInstanceClass: db.t3.micro
+      Engine: MySQL
+      EngineVersion: 8.0.33
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBName: !Ref DBName
+      VPCSecurityGroups:
+        - !GetAtt MyRDSSecurityGroup.GroupId
+      PubliclyAccessible: true
+      DeletionProtection: false
+
+  LambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: src/
+      Environment:
+        Variables:
+          DB_Host: !GetAtt MyRDS.Endpoint.Address
+          DB_Name: !Ref DBName
+          DB_User: !Ref DBUsername
+          DB_Password: !Ref DBPassword
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds:DescribeDBInstances
+              Resource: "*"
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref MyLambdaSecurityGroup
+        SubnetIds:
+          - subnet-083d0244a6db2ee8c
+          - subnet-09ec8e4d66d4cf806

@@ -1,0 +1,8 @@
+{
+  "action": "update",
+  "payload": {
+    "id": 2,
+    "name": "Michael",
+    "age": 24
+  }
+}

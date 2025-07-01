@@ -1,0 +1,6 @@
+{
+  "action": "delete",
+  "payload": {
+    "id": 2
+  }
+}
