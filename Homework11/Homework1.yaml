@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template for Homework11 Part1
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Select a VPC with Subnets covering 2 Availability zone at least.
+    MinLength: 1
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Select two private subnets covering 2 Availability zone at least.
+    MinLength: 2
+  KeyName:
+    Type: String
+    Default: mi-assignment8
+
+Resources:
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for EC2 instances and MSK Cluster
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 9092
+        ToPort: 9198
+        CidrIp: 0.0.0.0/0
+
+  MSKClusterConfiguration:
+    Type: AWS::MSK::Configuration
+    Properties:
+      Description: Configration for DE TRAINING MSK
+      KafkaVersionsList:
+      - "3.5.1"
+      Name: MI-MSK-Conf
+      ServerProperties: |
+        auto.create.topics.enable=true
+        default.replication.factor=2
+        min.insync.replicas=2
+        num.io.threads=8
+        num.network.threads=5
+        num.partitions=1
+        num.replica.fetchers=2
+        replica.lag.time.max.ms=30000
+        socket.receive.buffer.bytes=102400
+        socket.request.max.bytes=104857600
+        socket.send.buffer.bytes=102400
+        unclean.leader.election.enable=true
+        zookeeper.session.timeout.ms=18000
+
+  MSKCloudWatchGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: mi-msk-logs
+
+  MskCluster:
+    Type: AWS::MSK::Cluster
+    Properties:
+      ClusterName: MI-MSK-PART1
+      BrokerNodeGroupInfo:
+        InstanceType: kafka.t3.small
+        StorageInfo:
+          EBSStorageInfo:
+            VolumeSize: 20
+        ClientSubnets: !Ref SubnetIds
+        SecurityGroups:
+        - !Ref EC2SecurityGroup
+      KafkaVersion: 3.5.1
+      NumberOfBrokerNodes: 2
+      EnhancedMonitoring: DEFAULT
+      EncryptionInfo:
+        EncryptionInTransit:
+          ClientBroker: TLS_PLAINTEXT
+          InCluster: true
+      ConfigurationInfo:
+        Arn: !Ref MSKClusterConfiguration
+        Revision: 1
+      ClientAuthentication:
+        Unauthenticated:
+          Enabled: true
+        Sasl:
+          Iam:
+            Enabled: true
+          Scram:
+            Enabled: true
+      LoggingInfo:
+        BrokerLogs:
+          CloudWatchLogs:
+            Enabled: true
+            LogGroup: !Ref MSKCloudWatchGroup
+
+  EC2MSKRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+      - PolicyName: EC2MSKPOLICY
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: Allow
+            Action:
+            - kafka-cluster:Connect
+            - kafka-cluster:AlterCluster
+            - kafka-cluster:DescribeCluster
+            Resource: !Sub arn:aws:kafka:${AWS::Region}:${AWS::AccountId}:cluster/MI-MSK-PART1/*
+          - Effect: Allow
+            Action:
+            - kafka-cluster:*Topic*
+            - kafka-cluster:WriteData
+            - kafka-cluster:ReadData
+            Resource: !Sub arn:aws:kafka:${AWS::Region}:${AWS::AccountId}:topic/MI-MSK-PART1/*
+          - Effect: Allow
+            Action:
+            - kafka-cluster:AlterGroup
+            - kafka-cluster:DescribeGroup
+            Resource: !Sub arn:aws:kafka:${AWS::Region}:${AWS::AccountId}:group/MI-MSK-PART1/*
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:AmazonMSK_SCRAM_mi-SCRAM-*
+
+  EC2InstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      Roles:
+      - !Ref EC2MSKRole
+
+  MyEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0f3f13f145e66a0a3
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      SecurityGroupIds:
+      - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+      - Key: Name
+        Value: assignment11-EC2-MI
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo yum update -y
+          sudo yum -y install java-11
+          cd /home/ec2-user
+
+          wget https://archive.apache.org/dist/kafka/3.5.1/kafka_2.13-3.5.1.tgz
+          tar -xzf kafka_2.13-3.5.1.tgz
+
+          echo 'export PATH=$PATH:/home/ec2-user/kafka_2.13-3.5.1/bin' >> /home/ec2-user/.bash_profile
+          source /home/ec2-user/.bash_profile
+
+          mkdir -p /home/ec2-user/kafka_2.13-3.5.1/libs
+          wget -O /home/ec2-user/kafka_2.13-3.5.1/libs/aws-msk-iam-auth-1.1.1-all.jar \
+            https://github.com/aws/aws-msk-iam-auth/releases/download/v1.1.1/aws-msk-iam-auth-1.1.1-all.jar
+
+Outputs:
+  MskClusterArn:
+    Description: MSK Cluster ARN
+    Value: !Ref MskCluster
+  EC2InstanceProfile:
+    Description: IAM role ARN for EC2 to connect MSK
+    Value: !Ref EC2InstanceProfile
