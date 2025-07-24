@@ -1,0 +1,22 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for Homework 12 Kinesis Data Stream
+
+Parameters:
+  KinesisStreamName:
+    Type: String
+    Default: "mi-ks-homework12"
+    MinLength: "1"
+    Description: "Kinesis stream name for loading data"
+
+Resources:
+  DataStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Ref KinesisStreamName
+      RetentionPeriodHours: 168
+      ShardCount: 3
+
+Outputs:
+  KinesisDataStream:
+    Description: Kinesis Data Stream
+    Value: !Ref DataStream

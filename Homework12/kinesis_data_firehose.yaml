@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for Homework 12 AWS Kinesis Firehose Delivery System and S3 Bucket
+
+Parameters:
+  KinesisStreamName:
+    Type: String
+    Default: "mi-ks-homework12"
+    MinLength: "1"
+    Description: "Kinesis stream name for loading data"
+
+  S3BucketName:
+    Type: String
+    Default: "mi-ks-homework12-s3"
+    MinLength: "1"
+    Description: "S3 bucket name for store the data"
+
+  DataFirehoseName:
+    Type: String
+    Default: "mi-ks-homework12-firehose"
+    MinLength: "1"
+    Description: "Data Firehose name for streaming data"
+
+  LambdaFunctionName:
+    Type: String
+    Default: 'mi-ks-homework12-lambda'
+    MinLength: "1"
+    Description: "Lambda function name for transforming data"
+
+Resources:
+  DataStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Ref KinesisStreamName
+      RetentionPeriodHours: 168
+      ShardCount: 3
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3BucketName
+
+  DeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Ref DataFirehoseName
+      DeliveryStreamType: KinesisStreamAsSource
+      KinesisStreamSourceConfiguration:
+        KinesisStreamARN: !GetAtt DataStream.Arn
+        RoleARN: !GetAtt DataFirehoseRole.Arn
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt S3Bucket.Arn
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 50
+        CompressionFormat: UNCOMPRESSED
+        Prefix: firehose/
+        RoleARN: !GetAtt DataFirehoseRole.Arn
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+          - Type: Lambda
+            Parameters:
+            - ParameterName: LambdaArn
+              ParameterValue: !GetAtt LambdaFunction.Arn
+
+  DataFirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+
+        - Effect: Allow
+          Principal:
+            Service:
+            - firehose.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+
+      - PolicyName: DataFirehoseLabPolicy
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+
+          - Effect: Allow
+            Action:
+            - s3:AbortMultipartUpload
+            - s3:GetBucketLocation
+            - s3:GetObject
+            - s3:ListBucket
+            - s3:ListBucketMultipartUploads
+            - s3:PutObject
+            Resource:
+            - !Sub arn:aws:s3:::${S3BucketName}
+            - !Sub arn:aws:s3:::${S3BucketName}/*
+
+          - Effect: Allow
+            Action:
+            - kinesis:DescribeStream
+            - kinesis:GetShardIterator
+            - kinesis:GetRecords
+            - kinesis:ListShards
+            Resource: !GetAtt DataStream.Arn
+
+          - Effect: Allow
+            Action:
+            - lambda:InvokeFunction
+            Resource: !GetAtt LambdaFunction.Arn
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LambdaFunctionName
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaFunctionRole.Arn
+      Runtime: python3.13
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import base64
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              output = []
+
+              for record in event['records']:
+                  try:
+                      # decode the base64 data 
+                      payload = base64.b64decode(record['data']).decode('utf-8')
+                      data = json.loads(payload)
+
+                      # extract the data 
+                      item_id = data.get('item_id')
+                      user_id = data.get('user_id')
+                      action = data.get('action')
+                      price = data.get('price')
+
+                      # transform the data 
+                      # determine the category based on the item_id
+                      category = 'Other'
+                      if item_id is not None:
+                          try:
+                              item_id_int = int(item_id)
+                              if 100 <= item_id_int < 250:
+                                  category = 'Clothing'
+                              elif 250 <= item_id_int < 500:
+                                  category = 'Instruments'
+                              elif 500 <= item_id_int < 750:
+                                  category = 'Electronics'
+                              else:
+                                  category = 'Books'
+                          except (ValueError, TypeError):
+                              logger.warning(f"Could not convert item_id '{item_id}' to an integer. Defaulting to 'Other' category.")
+
+                      # create new data
+                      transformed_data = {
+                          'user_id': user_id,
+                          'item_id': item_id,
+                          'category': category,
+                          'price': price
+                      }
+
+                      encoded_data = base64.b64encode(json.dumps(transformed_data).encode('utf-8')).decode('utf-8')
+
+                      output.append({
+                          'recordId': record['recordId'],
+                          'result': 'Ok',
+                          'data': encoded_data
+                      })
+
+                  except Exception as e:
+                      logger.error(f"Error processing record: {e}", exc_info=True)
+                      output.append({
+                          'recordId': record['recordId'],
+                          'result': 'ProcessingFailed',
+                          'data': record['data']
+                      })
+
+              return {'records': output}
+
+  LambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+Outputs:
+  KinesisDataStream:
+    Description: Kinesis Data Stream
+    Value: !Ref DataStream
+  FirehoseDeliveryStream:
+    Description: Firehose Delivery Stream
+    Value: !Ref DeliveryStream
+  LambdaFunction:
+    Description: Lambda Function
+    Value: !Ref LambdaFunction
+  S3Bucket:
+    Description: S3 Bucket
+    Value: !Ref S3Bucket
