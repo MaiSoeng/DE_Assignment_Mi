@@ -1,0 +1,167 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for Homework 16 AWS Glue and CloudFormation
+
+Parameters:
+  DataBucketName:
+    Type: String
+    Default: homework16-data-bucket
+    MinLength: 1
+    Description: Name of the S3 bucket to store data
+
+  DatabaseName:
+    Type: String
+    Default: nyc_taxi_database
+    Description: Name of the Glue database
+
+  TableName:
+    Type: String
+    Default: hw16_table
+    Description: Name of the Glue table
+
+  CrawlerName:
+    Type: String
+    Default: hw16_crawler
+    Description: Name of the Glue crawler
+
+  GlueJobName:
+    Type: String
+    Default: hw16_glue_job
+    Description: Name of the Glue job
+
+Resources:
+  # create an S3 bucket for data storage
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref DataBucketName
+
+  # create a Glue Database
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref DatabaseName
+        Description: NYC taxi database for Homework16
+        LocationUri: !Sub 's3://${DataBucket}/'
+
+  GlueTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabase
+      TableInput:
+        Description: Table of NYC Taxi data
+        Name: !Ref TableName
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+        StorageDescriptor:
+          Location: !Sub 's3://${DataBucket}/'
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Columns:
+          - Name: tpep_pickup_datetime
+            Type: timestamp
+          - Name: tpep_dropoff_datetime
+            Type: timestamp
+          - Name: passenger_count
+            Type: int
+          - Name: trip_distance
+            Type: double
+
+  GlueCrawlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: hw16-crawler-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: glue.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+      - PolicyName: S3AccessPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            - s3:ListBucket
+            Resource:
+            - !Sub 'arn:aws:s3:::${DataBucket}'
+            - !Sub 'arn:aws:s3:::${DataBucket}/*'
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Ref CrawlerName
+      Description: Crawler for hw16 NYC taxi data
+      Role: !GetAtt GlueCrawlerRole.Arn
+      DatabaseName: !Ref GlueDatabase
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+      Configuration: |
+        {
+          "Version": 1.0,
+          "CrawlerOutput": {
+            "Partitions": {
+              "AddOrUpdateBehavior": "InheritFromTable"
+            }
+          }
+        }
+      Targets:
+        S3Targets:
+        - Path: !Sub 's3://${DataBucket}/'
+
+  GlueTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: hw16-crawler-trigger
+      Description: Trigger to run crawler on schedule
+      Type: SCHEDULED
+      Schedule: 'cron(0/5 * * * ? *)'
+      StartOnCreation: true
+      Actions:
+      - CrawlerName: !Ref CrawlerName
+      - JobName: !Ref GlueJobName
+
+Outputs:
+  BucketName:
+    Description: Name of the S3 Bucket
+    Value: !Ref DataBucket
+
+  GlueDatabaseName:
+    Description: Name of the glue database
+    Value: !Ref GlueDatabase
+
+  GlueTableName:
+    Description: Name of the glue table
+    Value: !Ref GlueTable
+
+  GlueCrawlerName:
+    Description: Name of the glue crawler
+    Value: !Ref GlueCrawler
+
+  GlueCrawlerRole:
+    Description: IAM Role of the glue crawler
+    Value: !GetAtt GlueCrawlerRole.Arn
+
+  GlueTrigger:
+    Description: Scheduled trigger for the Glue crawler
+    Value: !Ref GlueTrigger
