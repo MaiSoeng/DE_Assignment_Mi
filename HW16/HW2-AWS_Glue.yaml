@@ -1,0 +1,355 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for Homework 16 AWS Glue ETL job
+
+Parameters:
+  # Build up an S3 bucket for nyc taxi data
+  DataBucketName:
+    Type: String
+    Default: homework16-data-bucket
+    MinLength: 1
+    Description: Name of the S3 bucket to store data and scripts
+
+  # Buile up an S3 bucket for zones longitude and latitude data
+  ZonesBucketName:
+    Type: String
+    Default: hw16-zones-bucket
+    MinLength: 1
+    Description: Name of the S3 bucket to store zones shapefile data
+
+  # set up Vpc and Subnets
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Select a VPC with Subnets covering 2 Availability zone at least.
+    MinLength: 1
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Select two private subnets covering 2 Availability zone at least.
+    MinLength: 2
+
+  DatabaseName:
+    Type: String
+    Default: nyc_taxi_database
+    Description: Name of the Glue database
+
+  GlueJobName:
+    Type: String
+    Default: hw16_glue_ETLjob
+    Description: Name of the Glue job
+
+  CrawlerName:
+    Type: String
+    Default: hw16_part2_crawler
+    Description: Name of the Glue crawler
+
+  GlueTableName:
+    Type: String
+    Default: hw16_ETL_Table
+    Description: Glue table name from crawler
+
+  # RDS database settings
+  DBName:
+    Type: String
+    Default: assignment16nyctaxi
+    Description: The database name
+
+  DBUsername:
+    NoEcho: true
+    Type: String
+    Default: usermi
+    Description: The username for my database
+
+  DBPassword:
+    NoEcho: true
+    Type: String
+    Default: mi123456
+    Description: The password of the database
+
+Resources:
+  # create the S3 bucket for nyc taxi data
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref DataBucketName
+
+  # create the S3 bucket for zones
+  ZonesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ZonesBucketName
+
+  # create security group for Glue job and RDS
+  GlueJobSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow Glue job ENI to reach RDS
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+      - IpProtocol: "-1"
+        CidrIp: 0.0.0.0/0
+
+  MyRDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow Glue job to access MySQL RDS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 3306
+        ToPort: 3306
+        SourceSecurityGroupId: !Ref GlueJobSecurityGroup
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private subnets for MySQL
+      SubnetIds: !Ref SubnetIds
+
+  # create RDS
+  MyRDS:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: nyc-taxi-mysql
+      AllocatedStorage: "20"
+      DBInstanceClass: db.t3.micro
+      Engine: MySQL
+      EngineVersion: "8.0.43"
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      VPCSecurityGroups:
+      - !GetAtt MyRDSSecurityGroup.GroupId
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      PubliclyAccessible: false
+      DeletionProtection: false
+      Port: 3306
+
+  # create policy for job and crawler
+  GlueJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: job-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: glue.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+      - PolicyName: GluePolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:ListBucket
+            Resource:
+            - !Sub 'arn:aws:s3:::${DataBucketName}'
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            Resource:
+            - !Sub 'arn:aws:s3:::${DataBucketName}/data/*'
+            - !Sub 'arn:aws:s3:::${DataBucketName}/output/*'
+            - !Sub 'arn:aws:s3:::${DataBucketName}/scripts/*'
+            - !Sub 'arn:aws:s3:::${DataBucketName}/temp/*'
+            - !Sub 'arn:aws:s3:::${DataBucketName}/spark-events/*'
+          # S3 access - Zones bucket (read-only)
+          - Effect: Allow
+            Action:
+            - s3:ListBucket
+            Resource:
+            - !Sub 'arn:aws:s3:::${ZonesBucketName}'
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            Resource:
+            - !Sub 'arn:aws:s3:::${ZonesBucketName}/*'
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - rds:DescribeDBInstances
+            - rds:DescribeDBClusters
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - ec2:CreateNetworkInterface
+            - ec2:DescribeNetworkInterfaces
+            - ec2:DeleteNetworkInterface
+            - ec2:DescribeVpcs
+            - ec2:DescribeSubnets
+            - ec2:DescribeSecurityGroups
+            Resource: '*'
+          - Effect: Allow
+            Action: iam:PassRole
+            Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/job-role'
+            Condition:
+              StringEquals:
+                iam:PassedToService: glue.amazonaws.com
+
+  GlueCrawlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: crawler-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: glue.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+      - PolicyName: GluePolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:ListBucket
+            Resource:
+            - !Sub 'arn:aws:s3:::${DataBucketName}'
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            Resource:
+            - !Sub 'arn:aws:s3:::${DataBucketName}/data/*'
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+
+  # create a Glue Database
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref DatabaseName
+        Description: NYC taxi database for Homework16
+        LocationUri: !Sub 's3://${DataBucketName}/data/'
+
+  # create connection between rds and glue
+  GlueConnection:
+    Type: AWS::Glue::Connection
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      ConnectionInput:
+        Name: nyc-taxi-rds-conn
+        ConnectionType: JDBC
+        Description: JDBC to RDS for NYC Taxi
+        ConnectionProperties:
+          JDBC_CONNECTION_URL: !Sub 'jdbc:mysql://${MyRDS.Endpoint.Address}:3306/${DBName}'
+          USERNAME: !Ref DBUsername
+          PASSWORD: !Ref DBPassword
+        PhysicalConnectionRequirements:
+          SecurityGroupIdList:
+          - !Ref GlueJobSecurityGroup
+          SubnetId: !Select [ 0, !Ref SubnetIds ]
+
+  # create a crawler
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Ref CrawlerName
+      Description: Crawler for hw16 NYC taxi data
+      Role: !GetAtt GlueCrawlerRole.Arn
+      DatabaseName: !Ref GlueDatabase
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+      Targets:
+        S3Targets:
+        - Path: !Sub 's3://${DataBucketName}/data/'
+          Exclusions:
+          - 'Zones/*'
+
+  # create a glue job script editor
+  GlueJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Ref GlueJobName
+      Role: !GetAtt GlueJobRole.Arn
+      GlueVersion: "5.0"
+      WorkerType: G.1X
+      NumberOfWorkers: 2
+      Timeout: 2880
+      MaxRetries: 1
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${DataBucketName}/scripts/${GlueJobName}.py'
+      DefaultArguments:
+        '--job-language': python
+        '--enable-metrics': 'true'
+        '--enable-continuous-cloudwatch-log': 'true'
+        '--enable-spark-ui': 'true'
+        '--spark-event-logs-path': !Sub 's3://${DataBucketName}/spark-events/'
+        '--TempDir': !Sub 's3://${DataBucketName}/temp/'
+        '--job-bookmark-option': 'job-bookmark-enable'
+        '--enable-glue-datacatalog': 'true'
+        '--database_name': !Ref DatabaseName
+        '--input_path': !Sub 's3://${DataBucketName}/data/'
+        '--zones_path': !Sub 's3://${ZonesBucketName}/Zones/taxi_zones_centroids.parquet'
+        '--output_path': !Sub 's3://${DataBucketName}/output/'
+        '--connection_name': 'nyc-taxi-rds-conn'
+        '--db_name': !Ref DBName
+        '--db_user': !Ref DBUsername
+        '--db_password': !Ref DBPassword
+        '--db_jdbc_url': !Sub 'jdbc:mysql://${MyRDS.Endpoint.Address}:3306/${DBName}'
+        '--table_name': !Ref GlueTableName
+        '--additional-python-modules': 'pydeequ==1.0.1,requests==2.32.3'
+      Connections:
+        Connections:
+        - !Ref GlueConnection
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+
+Outputs:
+  RdsEndpoint:
+    Description: RDS MySQL endpoint
+    Value: !GetAtt MyRDS.Endpoint.Address
+
+  BucketName:
+    Description: Name of the S3 Bucket
+    Value: !Ref DataBucket
+
+  GlueDatabaseName:
+    Description: Name of the glue database
+    Value: !Ref GlueDatabase
+
+  GlueConnectionName:
+    Description: Glue JDBC connection name
+    Value: !Ref GlueConnection
+
+  GlueJobNameOut:
+    Description: Glue Job name
+    Value: !Ref GlueJob
+
+  GlueCrawlerName:
+    Description: Name of the glue crawler
+    Value: !Ref GlueCrawler
+
+  S3URI:
+    Description: The file path where the py script is installed
+    Value: !Sub 's3://${DataBucketName}/scripts/${GlueJobName}.py'
+
+  GlueCrawlerRole:
+    Description: IAM Role of the glue crawler
+    Value: !GetAtt GlueCrawlerRole.Arn
+
+  GlueJobRole:
+    Description: IAM Role of the glue job
+    Value: !GetAtt GlueJobRole.Arn
