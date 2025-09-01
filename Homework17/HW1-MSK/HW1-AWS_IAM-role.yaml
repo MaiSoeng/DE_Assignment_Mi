@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: IAM role for Glue Streaming Jobs with MSK
+
+Parameters:
+  GlueRoleName:
+    Type: String
+    Default: HW17-Part1-Role
+    Description: Name of the IAM Glue role
+
+  BucketName:
+    Type: String
+    Default: hw17-msk-part1
+
+  GlueLogName:
+    Type: String
+    Default: hw17-msk-part1-log
+
+  AllowMskRead:
+    Type: String
+    AllowedValues: [ "true", "false" ]
+    Default: "true"
+
+Resources:
+  GlueJobLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref GlueLogName
+      RetentionInDays: 14
+
+  GlueServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref GlueRoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: glue.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+      - PolicyName: GlueLogsAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: "*"
+          - Effect: Allow
+            Action: s3:ListBucket
+            Resource:
+            - !Sub 'arn:aws:s3:::${BucketName}'
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            Resource:
+            - !Sub 'arn:aws:s3:::${BucketName}/*'
+          - Effect: Allow
+            Action:
+            - kafka-cluster:Connect
+            - kafka-cluster:DescribeCluster
+            - kafka-cluster:DescribeClusterV2
+            - kafka-cluster:DescribeTopic
+            - kafka-cluster:DescribeGroup
+            - kafka-cluster:ReadData
+            Resource: "*"
+          - Effect: Allow
+            Action: iam:PassRole
+            Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${GlueRoleName}'
+            Condition:
+              StringEquals:
+                iam:PassedToService: glue.amazonaws.com
+
+Outputs:
+  GlueRoleArn:
+    Value: !GetAtt GlueServiceRole.Arn
+  GlueRoleName:
+    Value: !Ref GlueServiceRole
