@@ -1,0 +1,256 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template for Homework19
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: The name of the bucket to store the data
+    Default: hw19
+
+  AthenaWorkGroupName:
+    Type: String
+    Description: The name of the Athena work group
+    Default: hw19-AthenaWG
+
+  AthenaDatabase:
+    Type: String
+    Description: The name of the Athena database
+    Default: hw19-covid
+
+  CrawlerName:
+    Type: String
+    Description: The name of the crawler
+    Default: hw19-crawler
+
+  LakeFormationAdminArn:
+    Type: String
+    Description: IAM principal ARN to set as Lake Formation admin
+    Default: ""
+
+  DataAnalystPrincipalArn1:
+    Type: String
+    Description: IAM principal ARN that should get permissions
+    Default: ""
+
+  DataAnalystPrincipalArn2:
+    Type: String
+    Description: IAM principal ARN that should get permissions
+    Default: ""
+
+Conditions:
+  HasLFAdmin: !Not [ !Equals [ !Ref LakeFormationAdminArn, "" ] ]
+  HasAnalyst1: !Not [ !Equals [ !Ref DataAnalystPrincipalArn1, "" ] ]
+  HasAnalyst2: !Not [ !Equals [ !Ref DataAnalystPrincipalArn2, "" ] ]
+
+Resources:
+  # S3 Bucket for storing the dataset
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Description: The S3 bucket to store the data
+    Properties:
+      BucketName: !Ref BucketName
+
+  # create a Glue Database
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref AthenaDatabase
+        Description: E-commerce database for Homework19
+        LocationUri: !Sub 's3://${BucketName}/data/'
+
+  # create a crawler
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Ref CrawlerName
+      Description: Crawler for hw19 covid data
+      Role: !GetAtt GlueCrawlerRole.Arn
+      DatabaseName: !Ref GlueDatabase
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+      Targets:
+        S3Targets:
+        - Path: !Sub 's3://${BucketName}/data/'
+          Exclusions:
+          - 'Zones/*'
+
+  # glue crawler role
+  GlueCrawlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: hw19-crawler-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: glue.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+      - PolicyName: S3AccessPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            - s3:ListBucket
+            Resource:
+            - !Sub 'arn:aws:s3:::${BucketName}/data/'
+            - !Sub 'arn:aws:s3:::${BucketName}/data/*'
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+
+  # Athena work group configuration
+  AthenaWorkGroupConfiguration:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Ref AthenaWorkGroupName
+      Description: The Athena work group for hw19 covid data
+      State: ENABLED
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+        EngineVersion:
+          SelectedEngineVersion: 'Athena engine version 3'
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://${BucketName}/athena_results/'
+
+  # Athena IAM Role
+  AthenaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: hw19-athena-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: athena.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonAthenaFullAccess
+      Policies:
+      - PolicyName: S3AccessPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            - s3:ListBucket
+            Resource:
+            - !Sub 'arn:aws:s3:::${BucketName}/data/'
+            - !Sub 'arn:aws:s3:::${BucketName}/data/*'
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+
+  # Lake Formation Data Lake Settings
+  LakeFormationSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    Properties:
+      Admins: !If
+        - HasLFAdmin
+        - - DataLakePrincipalIdentifier: !Ref LakeFormationAdminArn
+        - []
+      CreateDatabaseDefaultPermissions: []
+      CreateTableDefaultPermissions: []
+
+  # Lake formation S3 bucket location
+  LakeFormationS3Location:
+    Type: AWS::LakeFormation::Resource
+    Properties:
+      ResourceArn: !Sub 'arn:aws:s3:::${BucketName}/data/'
+      UseServiceLinkedRole: true
+
+  # Lake Formation Permissions for the database
+  LakeFormationDatabase:
+    Type: AWS::LakeFormation::Permissions
+    DependsOn:
+    - GlueDatabase
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !GetAtt GlueCrawlerRole.Arn
+      Resource:
+        DatabaseResource:
+          Name: !Ref GlueDatabase
+          CatalogId: !Ref AWS::AccountId
+      Permissions:
+      - CREATE_TABLE
+      - ALTER
+      - DROP
+      - DESCRIBE
+
+  # Lake Formation Permissions for the S3 Bucket
+  LakeFormationS3:
+    Type: AWS::LakeFormation::Permissions
+    DependsOn:
+    - LakeFormationS3Location
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !GetAtt GlueCrawlerRole.Arn
+      Resource:
+        DataLocationResource:
+          S3Resource: !Sub 'arn:aws:s3:::${BucketName}/data/'
+          CatalogId: !Ref AWS::AccountId
+      Permissions:
+      - DATA_LOCATION_ACCESS
+
+  # grant data location access to the analyst, we will manually set up permissions in later steps
+  LakeFormationS3PermissionForAnalyst1:
+    Condition: HasAnalyst1
+    Type: AWS::LakeFormation::Permissions
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !Ref DataAnalystPrincipalArn1
+      Resource:
+        DataLocationResource:
+          S3Resource: !Sub 'arn:aws:s3:::${BucketName}'
+      Permissions:
+      - DATA_LOCATION_ACCESS
+
+  LakeFormationS3PermissionForAnalyst2:
+    Condition: HasAnalyst2
+    Type: AWS::LakeFormation::Permissions
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !Ref DataAnalystPrincipalArn2
+      Resource:
+        DataLocationResource:
+          S3Resource: !Sub 'arn:aws:s3:::${BucketName}'
+      Permissions:
+      - DATA_LOCATION_ACCESS
+
+Outputs:
+  S3BucketName:
+    Value: !Ref S3Bucket
+
+  GlueDatabaseName:
+    Description: Name of the Glue database
+    Value: !Ref GlueDatabase
+
+  GlueCrawlerName:
+    Value: !Ref GlueCrawler
+
+  GlueCrawlerRoleArn:
+    Value: !GetAtt GlueCrawlerRole.Arn
+
+  AthenaRoleArn:
+    Value: !GetAtt AthenaRole.Arn
