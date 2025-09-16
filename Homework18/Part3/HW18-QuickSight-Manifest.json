@@ -1,0 +1,17 @@
+
+{
+    "fileLocations": [
+        {
+            "URIPrefixes": [
+                "s3://hw18-part3/processed_data/"
+            ]
+        }
+    ],
+    "globalUploadSettings": {
+        "format": "CSV",
+        "delimiter": ",",
+        "textqualifier": "\"",
+        "containsHeader": "true"
+    }
+}
+                            
